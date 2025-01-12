@@ -1,20 +1,20 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"math/rand"
+	"time"
+)
 
 func main() {
 
-	var matA = [][]int {
-		{0, 1, 2},
-		{3, 4, 5},
-		{6, 7, 8},
-	}
+	var matA = genmats(3, 3)
 
-	var matB = [][]int {
-		{9, 10, 11},
-		{12, 13, 14},
-		{15, 16, 17},
-	}
+	var matB = genmats(3, 3)
+
+	fmt.Println(matA)
+
+	fmt.Println(matB)
 
 	var result = matmul(matA, matB)
 
@@ -48,4 +48,16 @@ func matmul (matA [][]int, matB [][]int) ([][]int) { // (input parameter list) (
 		} // repeate for next column of matB
 	} // repeate for next row of matA
 	return result // return new matrix to main
+}
+
+func genmats(rows, cols int) ([][]int) {
+	rand.Seed(time.Now().UnixNano()) // seed rand generator with current time
+	matrix := make([][]int, rows) // resulting matrix, 2d array
+	for i := 0; i < rows; i++ {
+		matrix[i] = make([]int, cols)
+		for j := 0; j < cols; j++ {
+			matrix[i][j] = rand.Intn(10) // populate each entry with number between 0 and 10
+		}
+	}
+	return matrix
 }
