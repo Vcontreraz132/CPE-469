@@ -12,13 +12,22 @@ func main() {
 
 	var matB = genmats(3, 3)
 
-	fmt.Println(matA)
+	fmt.Println("Matrix A:")
+	for _, row := range matA {
+		fmt.Println(row)
+	}
 
-	fmt.Println(matB)
+	fmt.Println("Matrix B:")
+	for _, row := range matB {
+		fmt.Println(row)
+	}
 
 	var result = matmul(matA, matB)
 
-	fmt.Println(result)
+	fmt.Println("Result Matrix:")
+	for _, row := range result {
+		fmt.Println(row)
+	}
 }
 
 func matmul (matA [][]int, matB [][]int) ([][]int) { // (input parameter list) (output parameter list)
