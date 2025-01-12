@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"time"
+	"sync"
 )
 
 func main() {
@@ -22,10 +23,16 @@ func main() {
 		fmt.Println(row)
 	}
 
-	var result = matmul(matA, matB)
+	var resultsequent = matmul(matA, matB)
+	var resultparallel = matmulparallel(matA, matB)
 
-	fmt.Println("Result Matrix:")
-	for _, row := range result {
+	fmt.Println("Result Matrix Sequential:")
+	for _, row := range resultsequent {
+		fmt.Println(row)
+	}
+
+	fmt.Println("Result Matrix Parallel:")
+	for _, row := range resultparallel {
 		fmt.Println(row)
 	}
 }
@@ -33,10 +40,10 @@ func main() {
 func matmul (matA [][]int, matB [][]int) ([][]int) { // (input parameter list) (output parameter list)
 	rowA := len(matA) // gets number of rows in A
 	rowB := len(matB) // number of rows in B
-	colsA := len(matA[0])
+	colA := len(matA[0])
 	colB := len(matB[0]) // number of columns in B = number of entries in first row of B
 
-	if colsA != rowB {
+	if colA != rowB {
 		panic("not correct dimensions")
 	}
 
@@ -70,3 +77,31 @@ func genmats(rows, cols int) ([][]int) {
 	}
 	return matrix
 }
+
+
+// parallel operations
+/*package main
+
+import (
+    "fmt"
+    "sync"
+)
+
+func process(id int, wg *sync.WaitGroup) {
+    defer wg.Done()
+    // Perform some time-consuming operation
+    fmt.Println("Processing:", id)
+}
+
+func main() {
+    var wg sync.WaitGroup
+    numTasks := 5
+
+    for i := 0; i < numTasks; i++ {
+        wg.Add(1)
+        go process(i, &wg)
+    }
+
+    wg.Wait()
+    fmt.Println("All tasks complete")
+}*/
