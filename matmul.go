@@ -9,32 +9,45 @@ import (
 
 func main() {
 
-	var matA = genmats(3, 3)
+	var n = 1000
 
-	var matB = genmats(3, 3)
+	var matA = genmats(n, n)
 
-	fmt.Println("Matrix A:")
-	for _, row := range matA {
-		fmt.Println(row)
-	}
+	var matB = genmats(n, n)
 
-	fmt.Println("Matrix B:")
-	for _, row := range matB {
-		fmt.Println(row)
-	}
+	// fmt.Println("Matrix A:")
+	// for _, row := range matA {
+	// 	fmt.Println(row)
+	// }
 
-	var resultsequent = matmul(matA, matB)
-	var resultparallel = matmulparallel(matA, matB)
+	// fmt.Println("Matrix B:")
+	// for _, row := range matB {
+	// 	fmt.Println(row)
+	// }
 
-	fmt.Println("Result Matrix Sequential:")
-	for _, row := range resultsequent {
-		fmt.Println(row)
-	}
+	start := time.Now()
+	//var resultsequent = 
+	matmul(matA, matB)
+	elapsed := time.Since(start)
+	
+	// fmt.Println("Result Matrix Sequential:")
+	// for _, row := range resultsequent {
+	// 	fmt.Println(row)
+	// }
 
-	fmt.Println("Result Matrix Parallel:")
-	for _, row := range resultparallel {
-		fmt.Println(row)
-	}
+	fmt.Println("Time:", elapsed)
+
+	start = time.Now()
+	//var resultparallel = 
+	matmulparallel(matA, matB)
+	elapsed = time.Since(start)
+
+	// fmt.Println("Result Matrix Parallel:")
+	// for _, row := range resultparallel {
+	// 	fmt.Println(row)
+	// }
+
+	fmt.Println("Time:", elapsed)
 }
 
 func matmul (matA [][]int, matB [][]int) ([][]int) { // (input parameter list) (output parameter list)
@@ -105,3 +118,39 @@ func main() {
     wg.Wait()
     fmt.Println("All tasks complete")
 }*/
+
+func process(matA, matB [][]int, result [][]int, i, j int, wg *sync.WaitGroup) { // break off matrix multiplication loop into a separate function
+	defer wg.Done()
+	sum := 0
+	for k := 0; k < len(matA[0]); k++ {
+		sum += matA[i][k] * matB[k][j] // calculate result of each matrix entry
+	}
+	result[i][j] = sum // store result into matrix entry
+}
+
+func matmulparallel(matA, matB [][]int) ([][]int) {
+	rowA := len(matA) // gets number of rows in A
+	rowB := len(matB) // number of rows in B
+	colA := len(matA[0])
+	colB := len(matB[0]) // number of columns in B = number of entries in first row of B
+
+	if colA != rowB {
+		panic("not correct dimensions")
+	}
+
+	result := make([][]int, rowA)
+	for i := range result {
+		result[i] = make([]int, colB)
+	}
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < rowA; i++ {
+		for j := 0; j < colB; j++ {
+			wg.Add(1) // for each matrix entry create a new process
+			go process(matA, matB, result, i, j, &wg) // call process funtion to calc result of each matrix entry
+		}
+	}
+	wg.Wait() // wait for all child processes to terminate
+	return result // return completed matrix
+}
