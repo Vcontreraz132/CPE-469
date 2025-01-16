@@ -17,48 +17,58 @@
 
 package main
 
-// import (
-// 	"fmt"
-// 	"time"
-// )
+import (
+	"fmt"
+	"math/rand"
+	"time"
+)
 
-// func main() {
-// 	start := time.Now() // Start time
+func main() {
+	start := time.Now() // Start time
 
-// 	// Define two 3x3 matrices
-// 	matrixOne := [3][3]int16{
-// 		{1, 2, 3},
-// 		{4, 5, 6},
-// 		{7, 8, 9},
-// 	}
-// 	matrixTwo := [3][3]int16{
-// 		{9, 8, 7},
-// 		{6, 5, 4},
-// 		{3, 2, 1},
-// 	}
+	// Declare matrices //
+	matrixOne := [8][8]int16{}
+	matrixTwo := [8][8]int16{}
+	resultMatrix := [8][8]int16{}
 
-// 	// Resultant matrix to store the result of multiplication
-// 	var resultMatrix [3][3]int16
+	// Dimensions of the matrices //
+	rows := 8
+	cols := 8
 
-// 	// Dimensions of the matrices
-// 	rows := 3
-// 	cols := 3
+	// Initialize matrices with random values from 0 - 4 (inclusive) //
+	for i := 0; i < rows; i++ {
+		for j := 0; j < rows; j++ {
+			matrixOne[i][j] = int16(rand.Intn(5))
+			matrixTwo[i][j] = int16(rand.Intn(5))
+		}
+	}
 
-// 	// Matrix multiplication logic
-// 	for i := 0; i < rows; i++ { // Iterate over rows of the first matrix
-// 		for j := 0; j < cols; j++ { // Iterate over columns of the second matrix
-// 			sum := int16(0)
-// 			for k := 0; k < cols; k++ { // Dot product calculation
-// 				sum += matrixOne[i][k] * matrixTwo[k][j]
-// 			}
-// 			resultMatrix[i][j] = sum
-// 		}
-// 	}
+	// Matrix multiplication //
+	for i := 0; i < rows; i++ { //Iterate over rows of the first matrix
+		for j := 0; j < cols; j++ { //Iterate over columns of the second matrix
+			sum := int16(0)
+			for k := 0; k < cols; k++ { //Dot product calculation
+				sum += matrixOne[i][k] * matrixTwo[k][j]
+			}
+			resultMatrix[i][j] = sum
+		}
+	}
 
-// 	for i := 0; i < rows; i++ {
-// 		fmt.Println(resultMatrix[i])
-// 	}
+	fmt.Println("|| Matrix One ||")
+	for i := 0; i < rows; i++ {
+		fmt.Println(matrixOne[i])
+	}
 
-// 	end := time.Now()                                  // End time
-// 	fmt.Printf("Execution time: %v\n", end.Sub(start)) // Calculate and print execution time
-// }
+	fmt.Println("\n|| Matrix Two ||")
+	for i := 0; i < rows; i++ {
+		fmt.Println(matrixTwo[i])
+	}
+
+	fmt.Println("\n|| Result Matrix ||")
+	for i := 0; i < rows; i++ {
+		fmt.Println(resultMatrix[i])
+	}
+
+	end := time.Now()                                  // End time
+	fmt.Printf("Execution time: %v\n", end.Sub(start)) // Calculate and print execution time
+}
