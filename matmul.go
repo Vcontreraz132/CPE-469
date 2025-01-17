@@ -5,49 +5,34 @@ import (
 	"math/rand"
 	"time"
 	"sync"
+	"runtime"
 )
 
 func main() {
 
-	var n = 1000
+	var n = 10000
+	var block = 200 // partition matrices into blocks
 
+	fmt.Println("Generating matrices")
 	var matA = genmats(n, n)
 
 	var matB = genmats(n, n)
+	fmt.Println("Generation Complete")
 
-	// fmt.Println("Matrix A:")
-	// for _, row := range matA {
-	// 	fmt.Println(row)
-	// }
 
-	// fmt.Println("Matrix B:")
-	// for _, row := range matB {
-	// 	fmt.Println(row)
-	// }
-
+	fmt.Println("Sequential Start")
 	start := time.Now()
 	//var resultsequent = 
-	matmul(matA, matB)
+	matmulSequentialBlock(matA, matB, block)
 	elapsed := time.Since(start)
-	
-	// fmt.Println("Result Matrix Sequential:")
-	// for _, row := range resultsequent {
-	// 	fmt.Println(row)
-	// }
+	fmt.Println("Sequential Time:", elapsed)
 
-	fmt.Println("Time:", elapsed)
-
+	fmt.Println("Parallel Start")
 	start = time.Now()
 	//var resultparallel = 
-	matmulparallel(matA, matB)
+	matmulparallel(matA, matB, block)
 	elapsed = time.Since(start)
-
-	// fmt.Println("Result Matrix Parallel:")
-	// for _, row := range resultparallel {
-	// 	fmt.Println(row)
-	// }
-
-	fmt.Println("Time:", elapsed)
+	fmt.Println("Parallel Time:", elapsed)
 }
 
 func matmul (matA [][]int, matB [][]int) ([][]int) { // (input parameter list) (output parameter list)
@@ -75,9 +60,47 @@ func matmul (matA [][]int, matB [][]int) ([][]int) { // (input parameter list) (
 			result[i][j] = temp // store result of calc into resulting matrix entry
 			temp = 0 // clear calc
 		} // repeate for next column of matB
+		//fmt.Println("Entry:", i, "Done")
 	} // repeate for next row of matA
 	return result // return new matrix to main
 }
+
+func matmulSequentialBlock(matA, matB [][]int, block int) [][]int {
+	rowA := len(matA)
+	colB := len(matB[0])
+	colA := len(matA[0])
+
+	if colA != len(matB) {
+		panic("Matrix dimensions do not match for multiplication")
+	}
+
+	// Initialize the result matrix
+	result := make([][]int, rowA)
+	for i := range result {
+		result[i] = make([]int, colB)
+	}
+
+	// Perform block-based multiplication
+	for i := 0; i < rowA; i += block { // Iterate over blocks horizontally in A
+		for j := 0; j < colB; j += block { // Iterate over blocks vertically in B
+			for k := 0; k < colA; k += block { // Iterate over blocks vertically in A
+				// Process the current block sequentially
+				for ii := i; ii < i+block && ii < rowA; ii++ { // Move horizontally within the block in A
+					for jj := j; jj < j+block && jj < colB; jj++ { // Move vertically within the block in B
+						sum := 0
+						for kk := k; kk < k+block && kk < colA; kk++ { // Move within the block
+							sum += matA[ii][kk] * matB[kk][jj]
+						}
+						result[ii][jj] += sum
+					}
+				}
+			}
+		}
+		fmt.Println("Block", i, "Done")
+	}
+	return result
+}
+
 
 func genmats(rows, cols int) ([][]int) {
 	rand.Seed(time.Now().UnixNano()) // seed rand generator with current time
@@ -91,44 +114,7 @@ func genmats(rows, cols int) ([][]int) {
 	return matrix
 }
 
-
-// parallel operations
-/*package main
-
-import (
-    "fmt"
-    "sync"
-)
-
-func process(id int, wg *sync.WaitGroup) {
-    defer wg.Done()
-    // Perform some time-consuming operation
-    fmt.Println("Processing:", id)
-}
-
-func main() {
-    var wg sync.WaitGroup
-    numTasks := 5
-
-    for i := 0; i < numTasks; i++ {
-        wg.Add(1)
-        go process(i, &wg)
-    }
-
-    wg.Wait()
-    fmt.Println("All tasks complete")
-}*/
-
-func process(matA, matB [][]int, result [][]int, i, j int, wg *sync.WaitGroup) { // break off matrix multiplication loop into a separate function
-	defer wg.Done()
-	sum := 0
-	for k := 0; k < len(matA[0]); k++ {
-		sum += matA[i][k] * matB[k][j] // calculate result of each matrix entry
-	}
-	result[i][j] = sum // store result into matrix entry
-}
-
-func matmulparallel(matA, matB [][]int) ([][]int) {
+func matmulparallel(matA, matB [][]int, block int) ([][]int) {
 	rowA := len(matA) // gets number of rows in A
 	rowB := len(matB) // number of rows in B
 	colA := len(matA[0])
@@ -145,11 +131,38 @@ func matmulparallel(matA, matB [][]int) ([][]int) {
 
 	var wg sync.WaitGroup
 
-	for i := 0; i < rowA; i++ {
-		for j := 0; j < colB; j++ {
-			wg.Add(1) // for each matrix entry create a new process
-			go process(matA, matB, result, i, j, &wg) // call process funtion to calc result of each matrix entry
+	numCPU := runtime.NumCPU()
+
+	channel := make(chan struct{}, numCPU) 
+
+	for i := 0; i < rowA; i += block { // i moves to next block horizontally through A
+		for j := 0; j < colB; j += block { // j moves to next block vertically through B
+			for k := 0; k < colA; k += block { // k moves to next block vertically through A
+
+				channel <- struct{}{} // Acquire a worker slot
+
+				wg.Add(1) // for each matrix block create a new process
+
+				go func (i, j, k int) { // create goroutine funtion to calc result of each matrix block
+					defer wg.Done()
+
+					defer func() {
+					<-channel // receive and close channel
+					}()
+
+					for ii := i; ii < i + block && ii < rowA; ii++ { // move horizontally through the A block
+						for jj := j; jj < j + block && jj < colB; jj++ { // move vertically through B block
+							sum := 0
+							for kk := k; kk < k + block && kk < colA; kk++ { // move vertically thorugh A block
+								sum += matA[ii][kk] * matB[kk][jj] // calculate result of each matrix entry
+							}
+							result[ii][jj] += sum
+						}
+					}
+				}(i, j, k)
+			}
 		}
+		fmt.Println("Block,", i, "Done")
 	}
 	wg.Wait() // wait for all child processes to terminate
 	return result // return completed matrix
