@@ -2,4 +2,4 @@ to run server.go
   go run server.go shared.go
 
 to run client nodes
-  go run client.go <node number>
+  go run client.go shared.go <node number>
