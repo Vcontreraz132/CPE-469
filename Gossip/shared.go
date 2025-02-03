@@ -14,6 +14,7 @@ type HeartbeatEntry struct {
 	Neighbor  int
 	Counter   int
 	Timestamp time.Time
+	Failed bool
 }
 
 // HeartbeatTable stores heartbeat information of a node
@@ -63,3 +64,7 @@ func (h* HeartbeatTable) Print() {
 		fmt.Printf("Node %d -> Counter: %d, Timestamp: %s\n", id, entry.Counter, entry.Timestamp.Format(time.RFC3339))
 	}
 }
+
+const(
+	FAILURE_TIMEOUT = 5 * time.Second // Timeout for detecting node failures
+)

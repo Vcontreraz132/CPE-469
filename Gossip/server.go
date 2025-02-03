@@ -6,8 +6,15 @@ import (
 	"log"
 	"net"
 	"net/rpc"
+	// "sync"
 	"time"
 )
+
+// ServerRPC defines server-side RPC methods
+// type ServerRPC struct {
+// 	Nodes map[int]*HeartbeatTable
+// 	Mutex sync.Mutex
+// }
 
 // RegisterNode registers a new node with the server
 func (s *ServerRPC) RegisterNode(args *RegisterNodeArgs, reply *RegisterNodeReply) error {
@@ -70,6 +77,10 @@ func (s *ServerRPC) Gossip(msg *GossipMessage, reply *bool) error {
 	if nodeTable, exists := s.Nodes[msg.SenderID]; exists {
 		nodeTable.Mutex.Lock()
 		for id, entry := range msg.Table {
+			// Only update if the received entry is more recent
+			if existing, exists := s.Membership[id]; !exists || entry.Counter > existing.Counter {
+				s.Membership[id] = entry
+			}
 			nodeTable.Entries[id] = entry
 		}
 		nodeTable.Mutex.Unlock()
@@ -87,6 +98,7 @@ func startServer() {
 	server := &ServerRPC {
 		Nodes: make(map[int]*HeartbeatTable),
 		PeerAddresses: make(map[int]string),
+		Membership: make(map[int]HeartbeatEntry),
 	}
 	
 	rpc.Register(server)

@@ -4,11 +4,13 @@ package main
 import (
 	"fmt"
 	"log"
-	"math/rand"
+	"os"
+	"strconv"
 	"net/rpc"
 	"sync"
 	"time"
 	"net"
+	"sort"
 )
 
 // Client represents a node in the gossip network
@@ -43,8 +45,21 @@ func (c *Client) ListenForGossip(port int) {
 // Gossip handles incoming gossip messages
 func (c *Client) Gossip(msg *GossipMessage, reply *bool) error {
 	c.Mutex.Lock()
+	// Merge received gossip data into own table
 	for id, entry := range msg.Table {
-		c.Table.Entries[id] = entry
+		// If entry is newer, update our table
+		if existing, exists := c.Table.Entries[id]; exists {
+			if existing.Failed {
+                continue // Ignore failed nodes
+            }
+			if entry.Counter > existing.Counter {
+                c.Table.Entries[id] = entry
+            }
+		} else {
+			if !entry.Failed { // Prevent reintroducing failed nodes
+                c.Table.Entries[id] = entry
+            }
+		}
 	}
 	c.Mutex.Unlock()
 	fmt.Printf("Node %d received gossip from Node %d\n", c.ID, msg.SenderID)
@@ -75,9 +90,14 @@ func (c *Client) SendGossip(interval time.Duration) {
 		time.Sleep(interval)
 		c.Mutex.Lock()
 		msg := GossipMessage{SenderID: c.ID, Table: c.Table.Entries}
-		var reply bool
+		for id, entry := range c.Table.Entries {
+			if !entry.Failed {
+				msg.Table[id] = entry
+			}
+		}
 		c.Mutex.Unlock()
 
+		var reply bool
 		// Send gossip to the server
 		if err := c.Server.Call("ServerRPC.Gossip", &msg, &reply); err != nil {
 			log.Println("Error sending gossip:", err)
@@ -85,37 +105,19 @@ func (c *Client) SendGossip(interval time.Duration) {
 			fmt.Printf("Node %d sent gossip to the server\n", c.ID)
 		}
 
-		// Fetch latest membership list from the server
-		var membershipList map[int]HeartbeatEntry
-		if err := c.Server.Call("ServerRPC.GetMembershipList", &c.ID, &membershipList); err == nil {
-			c.Mutex.Lock()
-			for id, entry := range membershipList {
-				c.Table.Entries[id] = entry
-			}
-			c.Mutex.Unlock()
-		}
+		// update membership list
+		c.UpdateMembershipList()
 
-		// Select random peers from membership list to gossip with
-		peerIDs := make([]int, 0, len(membershipList))
-		for id := range membershipList {
-			if id != c.ID {
-				peerIDs = append(peerIDs, id)
-			}
-		}
-
-		rand.Shuffle(len(peerIDs), func(i, j int) { peerIDs[i], peerIDs[j] = peerIDs[j], peerIDs[i] })
-
-		// Gossip to at most 2 random peers
-		for i, peerID := range peerIDs {
-			if i >= 2 { // Limit gossip to 2 peers per round
-				break
-			}
-			if peerAddr, exists := c.PeerAddresses[peerID]; exists {
-				peer, err := rpc.Dial("tcp", peerAddr)
+		// Select peers from the updated membership list
+		for id, addr := range c.PeerAddresses {
+			if id != c.ID { // Avoid self-gossip
+				peer, err := rpc.Dial("tcp", addr)
 				if err == nil {
-					err = peer.Call("Client.Gossip", &msg, &reply)
-					if err == nil {
-						fmt.Printf("Node %d sent gossip to Node %d\n", c.ID, peerID)
+					defer peer.Close()
+					if err := peer.Call("Client.Gossip", &msg, &reply); err != nil {
+						fmt.Printf("Error sending gossip to Node %d: %v\n", id, err)
+					} else {
+						fmt.Printf("Node %d sent gossip to Node %d\n", c.ID, id)
 					}
 				}
 			}
@@ -126,12 +128,24 @@ func (c *Client) SendGossip(interval time.Duration) {
 }
 
 
-// PrintTable prints the client's current heartbeat table
+// PrintTable prints the client's current heartbeat table in ascending order of node ID
 func (c *Client) PrintTable() {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
+
+	// Extract node IDs and sort them
+	ids := make([]int, 0, len(c.Table.Entries))
+	for id := range c.Table.Entries {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids) // Sort IDs in ascending order
+
+	// Print the table header
 	fmt.Printf("\nNode %d Heartbeat Table:\n", c.ID)
-	for id, entry := range c.Table.Entries {
+
+	// Print each node's heartbeat entry in sorted order
+	for _, id := range ids {
+		entry := c.Table.Entries[id]
 		fmt.Printf("Node %d -> Counter: %d, Timestamp: %s\n", id, entry.Counter, entry.Timestamp.Format(time.RFC3339))
 	}
 }
@@ -163,9 +177,62 @@ func (c *Client) UpdatePeerList(peers map[int]string, reply *bool) error {
 	return nil
 }
 
+// Request and update the global membership list from the server
+func (c *Client) UpdateMembershipList() {
+	var membershipList map[int]HeartbeatEntry
+	err := c.Server.Call("ServerRPC.GetMembershipList", &c.ID, &membershipList)
+	if err != nil {
+		fmt.Println("Error requesting membership list:", err)
+		return
+	}
+
+	// Update local table with global membership data
+	c.Mutex.Lock()
+	for id, entry := range membershipList {
+		c.Table.Entries[id] = entry
+	}
+	c.Mutex.Unlock()
+	fmt.Println("Updated global membership list")
+}
+
+// CheckNodeFailures periodically scans the heartbeat table and marks nodes as failed
+func (c *Client) CheckNodeFailures(interval time.Duration) {
+	for {
+		time.Sleep(interval)
+
+		c.Mutex.Lock()
+		currentTime := time.Now()
+
+		for id, entry := range c.Table.Entries {
+			if id == c.ID {
+				continue // Skip self
+			}
+
+			// Check if the last timestamp is too old
+			if !entry.Failed && currentTime.Sub(entry.Timestamp) > FAILURE_TIMEOUT {
+                fmt.Printf("Warning: Node %d detected failure of Node %d (Last update: %s)\n", c.ID, id, entry.Timestamp.Format(time.RFC3339))
+                c.Table.Entries[id] = HeartbeatEntry{
+                    ID:        id,
+                    Counter:   entry.Counter,
+                    Timestamp: entry.Timestamp,
+                    Failed:    true, // Mark as failed
+                }
+            }
+        }
+        c.Mutex.Unlock()
+    }
+}
+
+
 func main() {
-	rand.Seed(time.Now().UnixNano())
-	clientID := rand.Intn(8)
+	if len(os.Args) < 2 {
+		log.Fatal("Usage: go run client.go <node_id>")
+	}
+	clientID, err := strconv.Atoi(os.Args[1])
+	if err != nil || clientID < 1 || clientID > 8 {
+		log.Fatal("Invalid Node ID. Must be an integer between 1 and 8.")
+	}
+
 	server, err := rpc.Dial("tcp", "localhost:1234")
 	if err != nil {
 		log.Fatal("Connection error:", err)
@@ -219,6 +286,7 @@ func main() {
 	// Start heartbeat and gossip
 	go client.StartHeartbeat(1 * time.Second) // X = 2s
 	go client.SendGossip(2 * time.Second) // Y = 5s
+	go client.CheckNodeFailures(2 * time.Second) // Run failure check every 2 seconds
 
 	select {} // Keep running
 } 
