@@ -95,6 +95,7 @@ func (s *ServerRPC) Gossip(msg *GossipMessage, reply *bool) error {
 }
 
 func startServer() {
+	// Initialize & declare server struct //
 	server := &ServerRPC {
 		Nodes: make(map[int]*HeartbeatTable),
 		PeerAddresses: make(map[int]string),
@@ -103,19 +104,21 @@ func startServer() {
 	
 	rpc.Register(server)
 
-	listener, err := net.Listen("tcp", ":1234")
+	// Listen for connections //
+	listener, err := net.Listen("tcp", ":1234")	// Create an object for listening
 	if err != nil {
 		log.Fatal("Listen error:", err)
 	}
 	fmt.Println("Server listening on port 1234")
 
+	// Accept incoming connections //
 	for {
-		conn, err := listener.Accept()
+		conn, err := listener.Accept()		// Create an object for incoming connections
 		if err != nil {
 			log.Println("Connection error:", err)
 			continue
 		}
-		go rpc.ServeConn(conn)
+		go rpc.ServeConn(conn)			// Accept connection
 	}
 }
 
