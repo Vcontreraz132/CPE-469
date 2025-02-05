@@ -49,7 +49,7 @@ func (c *Client) Gossip(msg *GossipMessage, reply *bool) error {
 	for id, entry := range msg.Table {
 		// If entry is newer, update our table
 		if existing, exists := c.Table.Entries[id]; exists {
-			if existing.Failed {
+			if existing.Failed || entry.Failed {
                 continue // Ignore failed nodes
             }
 			if entry.Counter > existing.Counter {
@@ -89,11 +89,13 @@ func (c *Client) SendGossip(interval time.Duration) {
 	for {
 		time.Sleep(interval)
 		c.Mutex.Lock()
-		msg := GossipMessage{SenderID: c.ID, Table: c.Table.Entries}
+		msg := GossipMessage{SenderID: c.ID, Table: make(map[int]HeartbeatEntry)}
 		for id, entry := range c.Table.Entries {
-			if !entry.Failed {
-				msg.Table[id] = entry
+			if entry.Failed {
+				fmt.Printf("Node %d is propagating failure of Node %d\n", c.ID, id)
+				continue // skip failed nodes
 			}
+			msg.Table[id] = entry
 		}
 		c.Mutex.Unlock()
 
@@ -146,7 +148,7 @@ func (c *Client) PrintTable() {
 	// Print each node's heartbeat entry in sorted order
 	for _, id := range ids {
 		entry := c.Table.Entries[id]
-		fmt.Printf("Node %d -> Counter: %d, Timestamp: %s\n", id, entry.Counter, entry.Timestamp.Format(time.RFC3339))
+		fmt.Printf("Node %d -> Counter: %d, Timestamp: %s, Failed: %t\n", id, entry.Counter, entry.Timestamp.Format(time.RFC3339), entry.Failed)
 	}
 }
 
@@ -189,6 +191,9 @@ func (c *Client) UpdateMembershipList() {
 	// Update local table with global membership data
 	c.Mutex.Lock()
 	for id, entry := range membershipList {
+		if  entry.Failed {
+			continue
+		}
 		c.Table.Entries[id] = entry
 	}
 	c.Mutex.Unlock()
@@ -217,76 +222,100 @@ func (c *Client) CheckNodeFailures(interval time.Duration) {
                     Timestamp: entry.Timestamp,
                     Failed:    true, // Mark as failed
                 }
+				delete(c.Table.Entries, id)
             }
         }
         c.Mutex.Unlock()
     }
 }
 
+// SimulateFailure makes a node temporarily stop heartbeats and gossip, then recover
+func (c *Client) SimulateFailure(failureTime, downtime time.Duration) {
+    time.Sleep(failureTime) // Wait for Z seconds before failing
+    c.Mutex.Lock()
+    fmt.Printf("Node %d is going offline for %v seconds!\n", c.ID, downtime)
+    c.Mutex.Unlock()
+
+    time.Sleep(downtime) // Downtime period
+
+    c.Mutex.Lock()
+    fmt.Printf("Node %d has recovered and is resuming operation!\n", c.ID)
+    c.Mutex.Unlock()
+
+    // Resume heartbeat and gossip
+    go c.StartHeartbeat(1 * time.Second)
+    go c.SendGossip(2 * time.Second)
+}
+
+
 
 func main() {
-	if len(os.Args) < 2 {
-		log.Fatal("Usage: go run client.go <node_id>")
-	}
-	clientID, err := strconv.Atoi(os.Args[1])
-	if err != nil || clientID < 1 || clientID > 8 {
-		log.Fatal("Invalid Node ID. Must be an integer between 1 and 8.")
-	}
+    if len(os.Args) < 2 {
+        log.Fatal("Usage: go run client.go <node_id>")
+    }
 
-	server, err := rpc.Dial("tcp", "localhost:1234")
-	if err != nil {
-		log.Fatal("Connection error:", err)
-	}
+    clientID, err := strconv.Atoi(os.Args[1])
+    if err != nil || clientID < 1 || clientID > 8 {
+        log.Fatal("Invalid Node ID. Must be an integer between 1 and 8.")
+    }
 
-	client := &Client{
-		ID:     clientID,
-		Table:  HeartbeatTable{Entries: make(map[int]HeartbeatEntry)},
-		Server: server,
-		Peers: []*rpc.Client{},
-		PeerAddresses: make(map[int]string),
-	}
+    failureTime := 10 * time.Second  // Time after joining before failure
+    downtime := 10 * time.Second     // How long the node remains inactive
 
-	// Register client with server
-	args := RegisterNodeArgs{ID: clientID}
-	var reply RegisterNodeReply
-	if err := server.Call("ServerRPC.RegisterNode", &args, &reply); err != nil || !reply.Success {
-		log.Fatal("Registration failed")
-	}
-	fmt.Printf("Node %d registered successfully", clientID)
+    server, err := rpc.Dial("tcp", "localhost:1234")
+    if err != nil {
+        log.Fatal("Connection error:", err)
+    }
 
-	// Start listening for peer gossip on a unique port
-	peerPort := 1234 + clientID
-	go client.ListenForGossip(peerPort)
+    client := &Client{
+        ID:     clientID,
+        Table:  HeartbeatTable{Entries: make(map[int]HeartbeatEntry)},
+        Server: server,
+        Peers:  []*rpc.Client{},
+        PeerAddresses: make(map[int]string),
+    }
 
+    // Register client with server
+    args := RegisterNodeArgs{ID: clientID}
+    var reply RegisterNodeReply
+    if err := server.Call("ServerRPC.RegisterNode", &args, &reply); err != nil || !reply.Success {
+        log.Fatal("Registration failed")
+    }
+    fmt.Printf("Node %d registered successfully\n", clientID)
 
-	// Request the full membership list from the server
-	var membershipList map[int]HeartbeatEntry
-	if err := server.Call("ServerRPC.GetMembershipList", &clientID, &membershipList); err == nil {
-		fmt.Printf("Node %d received membership list: %v\n", clientID, membershipList)
-		// Add entries to our local table
-		client.Mutex.Lock()
-		for id, entry := range membershipList {
-			client.Table.Entries[id] = entry
-		}
-		client.Mutex.Unlock()
-	}
+    // Start listening for peer gossip on a unique port
+    peerPort := 1234 + clientID
+    go client.ListenForGossip(peerPort)
 
+    // Request the full membership list from the server
+    var membershipList map[int]HeartbeatEntry
+    if err := server.Call("ServerRPC.GetMembershipList", &clientID, &membershipList); err == nil {
+        fmt.Printf("Node %d received membership list: %v\n", clientID, membershipList)
+        client.Mutex.Lock()
+        for id, entry := range membershipList {
+            client.Table.Entries[id] = entry
+        }
+        client.Mutex.Unlock()
+    }
 
-	// Connect to peers
-	for _, peerAddr := range reply.Peers {
-		peer, err := rpc.Dial("tcp", peerAddr)
-		if err == nil {
-			client.Peers = append(client.Peers, peer)
-			fmt.Printf("Node %d connected to peer at %s\n", clientID, peerAddr)
-		} else {
-			fmt.Printf("Node %d failed to connect to peer at %s\n", clientID, peerAddr)
-		}
-	}
+    // Connect to peers
+    for _, peerAddr := range reply.Peers {
+        peer, err := rpc.Dial("tcp", peerAddr)
+        if err == nil {
+            client.Peers = append(client.Peers, peer)
+            fmt.Printf("Node %d connected to peer at %s\n", clientID, peerAddr)
+        } else {
+            fmt.Printf("Node %d failed to connect to peer at %s\n", clientID, peerAddr)
+        }
+    }
 
-	// Start heartbeat and gossip
-	go client.StartHeartbeat(1 * time.Second) // X = 2s
-	go client.SendGossip(2 * time.Second) // Y = 5s
-	go client.CheckNodeFailures(2 * time.Second) // Run failure check every 2 seconds
+    // Start heartbeat, gossip, and failure detection
+    go client.StartHeartbeat(1 * time.Second)
+    go client.SendGossip(2 * time.Second)
+    go client.CheckNodeFailures(2 * time.Second)
 
-	select {} // Keep running
-} 
+    // Simulate failure after some time
+    go client.SimulateFailure(failureTime, downtime)
+
+    select {} // Keep running
+}
