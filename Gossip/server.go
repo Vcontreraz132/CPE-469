@@ -1,11 +1,12 @@
-// server.go
 package main
 
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"net/rpc"
+
 	// "sync"
 	"time"
 )
@@ -16,50 +17,90 @@ import (
 // 	Mutex sync.Mutex
 // }
 
+// Waits for the specified delay and then removes the node with the given ID.
+func (s *ServerRPC) FailOneNodeAfter(nodeID int, delay time.Duration) {
+	time.Sleep(delay)
 
-// CleanupFailedNodes removes nodes that have been marked as failed for too long
-func (s *ServerRPC) CleanupNodes() {
-    for id, entry := range s.Membership {
-        if entry.Failed {
-            fmt.Printf("Server is removing Node %d from the global membership list\n", id)
-            delete(s.Membership, id)
-        }
-    }
+	s.Mutex.Lock()
+	defer s.Mutex.Unlock()
+
+	if _, exists := s.Membership[nodeID]; exists {
+		fmt.Printf("Server: Node %d has failed after %v. Removing from membership.\n", nodeID, delay)
+		delete(s.Membership, nodeID)
+		delete(s.Nodes, nodeID)
+		delete(s.PeerAddresses, nodeID)
+	} else {
+		fmt.Printf("Server: Node %d not found in membership. Nothing to remove.\n", nodeID)
+	}
 }
 
+// Randomly fails one node every `interval` seconds.
+func (s *ServerRPC) SimulateFailures(interval time.Duration) {
+	for {
+		time.Sleep(interval)
 
-// RegisterNode registers a new node with the server and assigns two neighbors
+		s.Mutex.Lock()
+		// If there are no nodes registered, skip.
+		if len(s.Membership) == 0 {
+			s.Mutex.Unlock()
+			continue
+		}
+
+		// Build a slice of node IDs from the membership list.
+		var nodeIDs []int
+		for id := range s.Membership {
+			nodeIDs = append(nodeIDs, id)
+		}
+
+		// Randomly pick one node ID to "fail"
+		failedNode := nodeIDs[rand.Intn(len(nodeIDs))]
+
+		// Remove the failed node from the membership list and other maps.
+		fmt.Printf("Server: Node %d has failed! Removing from membership list.\n", failedNode)
+		delete(s.Membership, failedNode)
+		delete(s.Nodes, failedNode)
+		delete(s.PeerAddresses, failedNode)
+		s.Mutex.Unlock()
+	}
+}
+
+// RegisterNode registers a new node with the server
 func (s *ServerRPC) RegisterNode(args *RegisterNodeArgs, reply *RegisterNodeReply) error {
-    s.Mutex.Lock()
-    defer s.Mutex.Unlock()
+	s.Mutex.Lock()
+	defer s.Mutex.Unlock()
 
-    if _, exists := s.Nodes[args.ID]; !exists {
-        s.Nodes[args.ID] = &HeartbeatTable{Entries: make(map[int]HeartbeatEntry)}
-        s.PeerAddresses[args.ID] = fmt.Sprintf("localhost:%d", 1234+args.ID)
+	if _, exists := s.Nodes[args.ID]; !exists {
+		s.Nodes[args.ID] = &HeartbeatTable{Entries: make(map[int]HeartbeatEntry)}
+		s.PeerAddresses[args.ID] = fmt.Sprintf("localhost:%d", 1234+args.ID) // assign unique port for each client
 
-        s.Membership[args.ID] = HeartbeatEntry{
-            ID: args.ID,
-            Counter: 0,
-            Timestamp: time.Now(),
-        }
+		s.Membership[args.ID] = HeartbeatEntry{
+			ID:        args.ID,
+			Counter:   0,
+			Timestamp: time.Now(),
+		}
 
-        fmt.Printf("Node %d registered successfully\n", args.ID)
-    } else {
-        reply.Success = false
-        fmt.Printf("Node %d already registered\n", args.ID)
-        return nil
-    }
+		reply.Success = true
+		fmt.Printf("Node %d registered successfully\n", args.ID)
+	} else {
+		reply.Success = false
+		fmt.Printf("Node %d already registered\n", args.ID)
+	}
 
-    // Assign two neighbors
-    neighbors := s.AssignNeighbors(args.ID)
-    s.Nodes[args.ID].Mutex.Lock()
-    for _, neighbor := range neighbors {
-        reply.Peers = append(reply.Peers, s.PeerAddresses[neighbor])
-    }
-    s.Nodes[args.ID].Mutex.Unlock()
+	// update peer list for all existing nodes
+	for id, addr := range s.PeerAddresses {
+		if id != args.ID {
+			reply.Peers = append(reply.Peers, addr)
+		}
+	}
 
-    reply.Success = true
-    return nil
+	// Provide the full membership list to the new node
+	reply.Peers = make([]string, 0)
+	for id, addr := range s.PeerAddresses {
+		if id != args.ID {
+			reply.Peers = append(reply.Peers, addr)
+		}
+	}
+	return nil
 }
 
 // GetMembershipList returns the current global membership list
@@ -69,14 +110,11 @@ func (s *ServerRPC) GetMembershipList(args *int, reply *map[int]HeartbeatEntry) 
 
 	*reply = make(map[int]HeartbeatEntry)
 	for id, entry := range s.Membership {
-		if !entry.Failed {
-			(*reply)[id] = entry
-		}	
+		(*reply)[id] = entry
 	}
 
 	return nil
 }
-
 
 // Gossip updates the server with a client's heartbeat table
 func (s *ServerRPC) Gossip(msg *GossipMessage, reply *bool) error {
@@ -87,24 +125,12 @@ func (s *ServerRPC) Gossip(msg *GossipMessage, reply *bool) error {
 		nodeTable.Mutex.Lock()
 		for id, entry := range msg.Table {
 			// Only update if the received entry is more recent
-
-			if existing, exists := s.Membership[id]; exists && existing.Failed {
-				continue
-			}
-
 			if existing, exists := s.Membership[id]; !exists || entry.Counter > existing.Counter {
-
-				if time.Since(entry.Timestamp) > FAILURE_TIMEOUT {
-                    fmt.Printf("Server detected failure of Node %d (Last update: %s)\n", id, entry.Timestamp.Format(time.RFC3339))
-                    entry.Failed = true
-                }
-
 				s.Membership[id] = entry
 			}
 			nodeTable.Entries[id] = entry
 		}
 		nodeTable.Mutex.Unlock()
-		s.CleanupNodes()
 		nodeTable.Print()
 		*reply = true
 		fmt.Printf("Received gossip from Node %d\n", msg.SenderID)
@@ -116,31 +142,39 @@ func (s *ServerRPC) Gossip(msg *GossipMessage, reply *bool) error {
 }
 
 func startServer() {
-	server := &ServerRPC {
-		Nodes: make(map[int]*HeartbeatTable),
+	// Initialize & declare server struct //
+	server := &ServerRPC{
+		Nodes:         make(map[int]*HeartbeatTable),
 		PeerAddresses: make(map[int]string),
-		Membership: make(map[int]HeartbeatEntry),
+		Membership:    make(map[int]HeartbeatEntry),
 	}
-	
+
 	rpc.Register(server)
 
-	listener, err := net.Listen("tcp", ":1234")
+	// Listen for connections //
+	listener, err := net.Listen("tcp", ":1234") // Create an object for listening
 	if err != nil {
 		log.Fatal("Listen error:", err)
 	}
 	fmt.Println("Server listening on port 1234")
 
+	// // Start the failure simulation every 10 seconds.
+	// go server.SimulateFailures(10 * time.Second)
+
+	// Launch the one-time failure simulation.
+	go server.FailOneNodeAfter(3, 15*time.Second)
+
+	// Accept incoming connections //
 	for {
-		conn, err := listener.Accept()
+		conn, err := listener.Accept() // Create an object for incoming connections
 		if err != nil {
 			log.Println("Connection error:", err)
 			continue
 		}
-		go rpc.ServeConn(conn)
+		go rpc.ServeConn(conn) // Accept connection
 	}
 }
 
 func main() {
 	startServer()
-
 }
