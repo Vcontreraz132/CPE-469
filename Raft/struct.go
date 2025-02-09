@@ -1,9 +1,5 @@
 package main
 
-import (
-	"time"
-)
-
 // Enumerates possible node status //
 type status int64
 
@@ -14,10 +10,26 @@ const (
 	offline
 )
 
+// Convert status to string during a print //
+func (s status) String() string {
+	switch s {
+	case follower:
+		return "Follower"
+	case candidate:
+		return "Candidate"
+	case leader:
+		return "Leader"
+	case offline:
+		return "Offline"
+	default:
+		return "Unknown"
+	}
+}
+
 // Node structure //
 type Node struct {
-	ID      int
-	State   status        //Describes the status
-	Timeout time.Duration //Timeout counter
-	Term    int           //Tracks the term
+	ID        int
+	State     status //Describes the status
+	Heartbeat chan bool
+	Term      int //Tracks the term
 }

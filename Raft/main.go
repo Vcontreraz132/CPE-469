@@ -22,23 +22,28 @@ import (
 	"time"
 )
 
-var timedOutNode *Node
-var mutex sync.Mutex
+// Global variables
+var (
+	mutex       sync.Mutex
+	nodeArray   []Node
+	leaderNode  *Node
+	leaderFound = false
+)
 
 func main() {
 	var wg sync.WaitGroup
 
 	// Slice to store nodes //
 	numNodes := 8
-	nodeArray := make([]Node, numNodes)
+	nodeArray = make([]Node, numNodes)
 
 	// Initialize Node struct //
 	for i := 0; i < numNodes; i++ {
 		nodeArray[i] = Node{
-			ID:      i,
-			State:   follower,
-			Timeout: time.Duration(rand.Intn(151)+150) * time.Millisecond,
-			Term:    1,
+			ID:        i,
+			State:     follower,
+			Heartbeat: make(chan bool),
+			Term:      1,
 		}
 	}
 
@@ -49,56 +54,71 @@ func main() {
 
 	}
 
-	if timedOutNode != nil {
-		timedOutNode.State = leader
-
-	}
-
 	wg.Wait()
 	fmt.Println("All nodes have finished execution.")
 }
 
-// Convert status to string during a print //
-func (s status) String() string {
-	switch s {
-	case follower:
-		return "Follower"
-	case candidate:
-		return "Candidate"
-	case leader:
-		return "Leader"
-	case offline:
-		return "Offline"
-	default:
-		return "Unknown"
-	}
-}
-
-// Function representing a node process
 func nodeProcess(node *Node, wg *sync.WaitGroup) {
-	defer wg.Done() // Decrease counter when function ends
+	defer wg.Done() //Decrease counter when function ends
 
 	fmt.Printf("Node %d is running\n", node.ID)
 
-	// Decrement timer //
-	for node.Timeout > 0 {
-		node.Timeout -= time.Millisecond // Decrement by 1ms
-		time.Sleep(time.Millisecond)     // Simulate 1ms passing
-	}
+	// Create a timer that expires upon reaching timeout //
+	timeout := time.Duration(rand.Intn(5)+4) * time.Second //Change to 151+150ms later
+	timer := time.NewTimer(timeout)
 
 	// Record the first node to time out //
 	mutex.Lock()
-	if timedOutNode == nil {
-		node.State = leader
-		timedOutNode = node
+	if leaderFound == false {
+		leaderNode = node
+		leaderNode.State = leader
+		leaderFound = true //Set global variable
 
 	}
 	mutex.Unlock()
 
 	if node.State == leader {
-		fmt.Printf("Node: %d -- Hi I'm leader!\n", node.ID)
+		go sendHeartbeat(leaderNode, 2*time.Second) //Send a heartbeat every interval
+
+	} else if node.State == follower {
+		for {
+			select {
+			case <-node.Heartbeat: //Execute when a heartbeat is detected
+				fmt.Printf("Node %d received heartbeat from Leader %d\n", node.ID, leaderNode.ID)
+
+				// Drain timer //
+				select {
+				case <-timer.C: //Do nothing if timer expired
+				default: //Do nothing if a case is not fulfilled
+				}
+
+				// Reset timer after receiving a heartbeat //
+				newTimeOut := time.Duration(rand.Intn(5)+4) * time.Second
+				timer.Reset(newTimeOut)
+
+			case <-timer.C: //Execute if a node times out
+				fmt.Printf("Node %d detected Leader failure! Starting election...\n", node.ID)
+				leaderFound = false
+				return
+			}
+		}
 	}
-	if node.State == follower {
-		fmt.Printf("Node: %d -- I'm a follower\n", node.ID)
+}
+
+func sendHeartbeat(node *Node, interval time.Duration) {
+	timer := time.NewTicker(interval) //Ticker for continous ticks at every interval
+	defer timer.Stop()
+
+	for {
+		<-timer.C //Prevents execution until the next interval
+
+		// Send a heartbeat to every follower //
+		fmt.Printf("\nLeader %d sending heartbeat...\n", node.ID)
+		for _, localNode := range nodeArray { //localNode modifies a copy of the struct
+			if localNode.ID != node.ID { // Skip leader
+				localNode.Heartbeat <- true // Send heartbeat to followers
+
+			}
+		}
 	}
 }
