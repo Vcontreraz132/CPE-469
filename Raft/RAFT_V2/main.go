@@ -14,53 +14,51 @@
  *
  */
 
- package main
+package main
 
- import (
-	 "fmt"
-	 "math/rand"
-	 "time"
- )
- 
- func main() {
-	rand.Seed(time.Now().UnixNano())
- 
-	 // Slice to store nodes //
-	 numNodes := 8
-	 nodeArray := make([]*Node, numNodes)
-	 addresses := make([]string, numNodes) // create list for node addresses
-	 base := 8000 // base node address
+import (
+	"fmt"
+	"time"
+)
 
-	 // init nodes with an address
-	 for i := 0; i < numNodes; i++ {
-		addresses[i] = fmt.Sprintf("localhost:%d", base + i) // 8000, 8001 ...
-	 }
+func main() {
+	time.Now().UnixNano()
 
-	 // Initialize Node struct //
-	 for i := 0; i < numNodes; i++ {
-		 nodeArray[i] = &Node{
-			 ID:			i, // current node id
-			 State: 		follower, // node starts as follower
-			 CurrentTerm:	0, // set current term to 0
-			 VotedFor:		-1, // notes havent voted for anyone
-			 PeerAddress: addresses, // pop member list
-			 Address: addresses[i], // assign node an address
-			 resetElection: make(chan bool, 1), // create buffered channel
-		 }
+	// Slice to store nodes //
+	numNodes := 8
+	nodeArray := make([]*Node, numNodes)
+	addresses := make([]string, numNodes) // create list for node addresses
+	base := 8000                          // base node address
 
-		 err := nodeArray[i].start()
-		 if err != nil {
+	// init nodes with an address
+	for i := 0; i < numNodes; i++ {
+		addresses[i] = fmt.Sprintf("localhost:%d", base+i) // 8000, 8001 ...
+	}
+
+	// Initialize Node struct //
+	for i := 0; i < numNodes; i++ {
+		nodeArray[i] = &Node{
+			ID:            i,                  // current node id
+			State:         follower,           // node starts as follower
+			CurrentTerm:   0,                  // set current term to 0
+			VotedFor:      -1,                 // notes havent voted for anyone
+			PeerAddress:   addresses,          // pop member list
+			Address:       addresses[i],       // assign node an address
+			resetElection: make(chan bool, 1), // create buffered channel
+		}
+
+		err := nodeArray[i].start()
+		if err != nil {
 			fmt.Printf("Node %d failed to start %v", i, err)
-		 }
-	 }
- 
-	 // Start node process //
-	 for i := 0; i< numNodes; i++ {
-		
+		}
+	}
+
+	// Start node process //
+	for i := 0; i < numNodes; i++ {
 		go nodeArray[i].election()
- 
-	 }
- 
+
+	}
+
 	time.Sleep(1 * time.Hour)
-	 fmt.Println("All nodes have finished execution.")
- }
+	fmt.Println("All nodes have finished execution.")
+}

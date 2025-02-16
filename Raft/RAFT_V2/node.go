@@ -46,7 +46,7 @@ func (n *Node) start() error {
 	// branch and handle client requests
 	go func() {
 		for {
-			connection, err:= listener.Accept()
+			connection, err := listener.Accept()
 
 			if err != nil {
 				fmt.Println("ERROR:", err)
@@ -61,9 +61,9 @@ func (n *Node) start() error {
 
 func (n *Node) election() {
 	for {
-		timeout := time.Duration(2 + rand.Intn(10)) * time.Second // random timeout between 1 and 10 seconds
+		timeout := time.Duration(2+rand.Intn(10)) * time.Second // random timeout between 1 and 10 seconds
 		select {
-		case <- time.After(timeout):
+		case <-time.After(timeout):
 			n.mutex.Lock()
 			if n.State == follower {
 				fmt.Printf("Node %d has timed out. Starting election\n", n.ID)
@@ -82,7 +82,7 @@ func (n *Node) election() {
 func (n *Node) startElection() {
 	n.mutex.Lock()
 	n.State = candidate // node becomes candidate
-	n.CurrentTerm++ // increment term count
+	n.CurrentTerm++     // increment term count
 	term := n.CurrentTerm
 	voteCount := 1 // candidate votes for itself
 	n.VotedFor = n.ID
@@ -111,13 +111,13 @@ func (n *Node) startElection() {
 			defer client.Close()
 
 			request := VoteRequest{ // populate VoteRequest struct
-				Term: term,
+				Term:        term,
 				CandidateID: n.ID,
 			}
 
-			var reply VoteReply // create a reply
-			err = client.Call("Node.RequestVote", request, &reply) // tell peer to execute RequestVote funct 
-			if err == nil && reply.VoteGranted { // if reply came back
+			var reply VoteReply                                    // create a reply
+			err = client.Call("Node.RequestVote", request, &reply) // tell peer to execute RequestVote funct
+			if err == nil && reply.VoteGranted {                   // if reply came back
 				voteM.Lock()
 				voteCount++ // increment candidate vote count
 				voteM.Unlock()
@@ -132,7 +132,7 @@ func (n *Node) startElection() {
 		close(doneCh)
 	}()
 	select {
-	case <- doneCh:
+	case <-doneCh:
 	case <-time.After(2 * time.Second):
 	}
 
@@ -143,7 +143,7 @@ func (n *Node) startElection() {
 		return
 	}
 
-	if voteCount > len(n.PeerAddress) / 2 { // if candidate gets more than half the votes
+	if voteCount > len(n.PeerAddress)/2 { // if candidate gets more than half the votes
 		fmt.Printf("Node %d wins with %d votes\n", n.ID, voteCount)
 		n.State = leader
 		n.mutex.Unlock()
@@ -190,8 +190,14 @@ func (n *Node) RequestVote(req VoteRequest, reply *VoteReply) error {
 
 func (n *Node) leadership() {
 	fmt.Printf("Node %d is acting leader for term %d\n", n.ID, n.CurrentTerm)
-	timer := time.NewTicker(1 * time.Second) // create 1 second timer
+	timer := time.NewTicker(1 * time.Second)
 	defer timer.Stop()
+
+	// Simulate leader failure after 5 seconds //
+	go func() {
+		time.Sleep(5 * time.Second)
+		n.Stop() //Simulate the leader node crashing
+	}()
 
 	for {
 		n.mutex.Lock()
@@ -205,29 +211,26 @@ func (n *Node) leadership() {
 		CurrentTerm := n.CurrentTerm
 		n.mutex.Unlock()
 
-		// send heartbeat to peers
+		// Send heartbeat to peers
 		for _, peers := range n.PeerAddress {
-			if peers == n.Address { // skip the leader node
+			if peers == n.Address {
 				continue
 			}
 
 			go func(peerAddr string) {
 				client, err := rpc.Dial("tcp", peerAddr)
-
 				if err != nil {
 					return
 				}
 				defer client.Close()
 
-				message := HeartbeatSend{ // create heartbeat message
-					Term: CurrentTerm,
+				message := HeartbeatSend{
+					Term:     CurrentTerm,
 					LeaderID: n.ID,
 				}
 
 				var reply HeartbeatReply
-				if err := client.Call("Node.Heartbeat", message, &reply); err == nil {
-					//fmt.Printf("Node %d received heartbeat reply\n")
-				}
+				client.Call("Node.Heartbeat", message, &reply)
 			}(peers)
 		}
 		<-timer.C
@@ -248,7 +251,7 @@ func (n *Node) Heartbeat(msg HeartbeatSend, reply *HeartbeatReply) error {
 	n.CurrentTerm = msg.Term // update nodes term tracker
 
 	n.State = follower // force node to become follower
-	n.VotedFor = -1 // reset vote flag
+	n.VotedFor = -1    // reset vote flag
 
 	// Signal to reset our election timer.
 	select {
@@ -260,4 +263,12 @@ func (n *Node) Heartbeat(msg HeartbeatSend, reply *HeartbeatReply) error {
 
 	reply.Term = n.CurrentTerm
 	return nil
+}
+
+func (n *Node) Stop() {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+
+	n.State = offline
+	fmt.Printf("Node %d has gone offline (Leader failed)\n", n.ID)
 }
