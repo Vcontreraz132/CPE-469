@@ -1,1 +1,5 @@
-hi
+start server
+go run ./server
+
+start node
+go run main.go node.go data.go struct.go consensus.go
