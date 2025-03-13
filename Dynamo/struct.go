@@ -1,12 +1,13 @@
+// struct.go
 package main
 
 import "time"
 
 // Member holds a node's membership information.
 type Member struct {
-	ID       string 
-	Address  string
-	LastSeen time.Time
+	ID       string    `json:"id"`
+	Address  string    `json:"address"`
+	LastSeen time.Time `json:"last_seen"`
 }
 
 // Definitions for central membership RPC arguments and replies.

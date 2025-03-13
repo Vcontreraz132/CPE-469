@@ -1,3 +1,4 @@
+// node.go
 package main
 
 import (
@@ -9,6 +10,7 @@ import (
 	"time"
 	//"encoding/json"
 	"errors"
+	"fmt"
 )
 
 // Node represents a single node in the system.
@@ -20,6 +22,8 @@ type Node struct {
 	// Store *DataStore
 	DataStore map[string]ValueRecord
 	mutex      sync.Mutex
+	OperationLog []string
+	LogMutex sync.Mutex
 }
 
 // NewNode creates a new Node instance.
@@ -221,6 +225,8 @@ func (n *Node) updateHeartbeat() {
 	}
 }
 
+// -- consensus / data ops --
+
 // create vector clock to map node ids to counter
 type VectorClock map[string]int
 
@@ -270,6 +276,8 @@ func (n *Node) DoPut(key, value string) error {
 	n.mutex.Unlock()
 	log.Printf("DoPut: Node %s locally updated key %s to value %s with clock %v", n.ID, key, value, newClock)
 
+	n.LogOperation("PUT_LOCAL", fmt.Sprintf("Key %s updated to '%s' with clock %v", key, value, newClock))
+
 	// Select quorum peers (for replication factor N=3, select 2 peers).
 	quorumPeers := n.selectQuorumPeers()
 	ackCount := 1 // local update counts as one ack.
@@ -283,21 +291,25 @@ func (n *Node) DoPut(key, value string) error {
 		client, err := rpc.Dial("tcp", peer)
 		if err != nil {
 			log.Printf("DoPut: error dialing peer %s: %v", peer, err)
+			n.LogOperation("PUT_RPC_ERROR", fmt.Sprintf("Error dialing peer %s: %v", peer, err))
 			continue
 		}
 		err = client.Call("DataService.PutRPC", args, &reply)
 		client.Close()
 		if err != nil {
 			log.Printf("DoPut: error calling PutRPC on %s: %v", peer, err)
+			n.LogOperation("PUT_RPC_ERROR", fmt.Sprintf("Error calling PutRPC on %s: %v", peer, err))
 			continue
 		}
 		if reply.Success {
 			ackCount++
+			n.LogOperation("PUT_RPC_SUCCESS", fmt.Sprintf("Peer %s acknowledged put for key %s", peer, key))
 		}
 	}
 	W := 2 // Write quorum requirement.
 	if ackCount >= W {
 		log.Printf("DoPut: Quorum achieved for key %s (%d acks)", key, ackCount)
+		n.LogOperation("PUT_QUORUM", fmt.Sprintf("Quorum achieved for key %s (%d acks)", key, ackCount))
 		return nil
 	}
 	return errors.New("DoPut: consensus failed, insufficient acknowledgements")
@@ -311,6 +323,7 @@ func (n *Node) DoGet(key string) (ValueRecord, error) {
 	n.mutex.Lock()
 	if record, exists := n.DataStore[key]; exists {
 		responses = append(responses, record)
+		n.LogOperation("GET_LOCAL", fmt.Sprintf("Found key %s locally with clock %v", key, record.Clock))
 	}
 	n.mutex.Unlock()
 
@@ -322,15 +335,18 @@ func (n *Node) DoGet(key string) (ValueRecord, error) {
 		client, err := rpc.Dial("tcp", peer)
 		if err != nil {
 			log.Printf("DoGet: error dialing peer %s: %v", peer, err)
+			n.LogOperation("GET_RPC_ERROR", fmt.Sprintf("Error dialing peer %s: %v", peer, err))
 			continue
 		}
 		err = client.Call("DataService.GetRPC", args, &reply)
 		client.Close()
 		if err != nil {
 			log.Printf("DoGet: error calling GetRPC on %s: %v", peer, err)
+			n.LogOperation("GET_RPC_ERROR", fmt.Sprintf("Error calling GetRPC on %s: %v", peer, err))
 			continue
 		}
 		responses = append(responses, reply.Record)
+		n.LogOperation("GET_RPC_SUCCESS", fmt.Sprintf("Peer %s returned value for key %s with clock %v", peer, key, reply.Record.Clock))
 	}
 	if len(responses) == 0 {
 		return ValueRecord{}, errors.New("DoGet: key not found in quorum")
@@ -343,6 +359,7 @@ func (n *Node) DoGet(key string) (ValueRecord, error) {
 		}
 	}
 	log.Printf("DoGet: Returning key %s with value %s and clock %v", key, latest.Value, latest.Clock)
+	n.LogOperation("GET_QUORUM", fmt.Sprintf("Returning key %s with value '%s' and clock %v", key, latest.Value, latest.Clock))
 	return latest, nil
 }
 
@@ -359,4 +376,38 @@ func (n *Node) selectQuorumPeers() []string {
 		peers = peers[:2]
 	}
 	return peers
+}
+
+
+
+// operation log with timestamp
+func (n *Node) LogOperation(opType, details string) {
+	entry := fmt.Sprintf("%s - %s: %s", time.Now().Format(time.RFC3339), opType, details)
+	n.LogMutex.Lock()
+	n.OperationLog = append(n.OperationLog, entry)
+	n.LogMutex.Unlock()
+	// Also output to standard log for real-time observation.
+	log.Println(entry)
+}
+
+
+const heartbeatTimeout = 10 * time.Second // adjust as needed
+
+// cleanupStaleMembers periodically removes members whose heartbeat is stale.
+func (n *Node) cleanupStaleMembers() {
+    for {
+        time.Sleep(5 * time.Second) // check every 5 seconds
+        n.mutex.Lock()
+        for id, member := range n.Membership {
+            if id == n.ID {
+                continue // skip self
+            }
+            if time.Since(member.LastSeen) > heartbeatTimeout {
+                log.Printf("Removing stale member %s (last seen %v ago)", id, time.Since(member.LastSeen))
+                delete(n.Membership, id)
+                delete(n.Peers, member.Address)
+            }
+        }
+        n.mutex.Unlock()
+    }
 }

@@ -1,3 +1,4 @@
+// data.go
 package main
 
 import (
