@@ -58,3 +58,38 @@ func (ds *DataService) GetRPC(args *GetArgs, reply *GetReply) error {
 	reply.Record = record
 	return nil
 }
+
+// ForwardPutRPC is an RPC method that forwards a put request to the responsible node.
+func (ds *DataService) ForwardPutRPC(args *PutArgs, reply *PutReply) error {
+	// Check for an existing value.
+	ds.Node.mutex.Lock()
+	existing, exists := ds.Node.DataStore[args.Key]
+	ds.Node.mutex.Unlock()
+
+	if exists {
+		log.Printf("Node %s received forwarded put for key %s. Changing previous value '%s' to '%s'", ds.Node.ID, args.Key, existing.Value, args.Value)
+	} else {
+		log.Printf("Node %s received forwarded put for key %s. No previous value, setting to '%s'", ds.Node.ID, args.Key, args.Value)
+	}
+
+	// Process the put on the responsible node.
+	err := ds.Node.DoPut(args.Key, args.Value)
+	if err != nil {
+		reply.Success = false
+		return err
+	}
+	reply.Success = true
+	return nil
+}
+
+// ForwardGetRPC forwards a get request to the responsible node.
+func (ds *DataService) ForwardGetRPC(args *GetArgs, reply *GetReply) error {
+	log.Printf("Node %s received forwarded get request for key %s", ds.Node.ID, args.Key)
+
+	record, err := ds.Node.DoGet(args.Key)
+	if err != nil {
+		return err
+	}
+	reply.Record = record
+	return nil
+}

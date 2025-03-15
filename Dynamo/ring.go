@@ -150,6 +150,29 @@ func (r *Ring) GetPredecessor(memberID string) (RingNode, error) {
 	return r.nodes[predecessorIndex], nil
 }
 
+// GetResponsibleNode returns the ring node responsible for the given key.
+func (r *Ring) GetResponsibleNode(key string) (RingNode, error) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	if len(r.nodes) == 0 {
+		return RingNode{}, errors.New("Ring is empty")
+	}
+
+	keyHash := hashValue(key)
+	// Binary search for the first node with hash >= keyHash.
+	idx := sort.Search(len(r.nodes), func(i int) bool {
+		return r.nodes[i].Hash >= keyHash
+	})
+
+	// If not found, wrap around to the first node.
+	if idx == len(r.nodes) {
+		idx = 0
+	}
+
+	return r.nodes[idx], nil
+}
+
 // printNeighbors prints the predecessor and successor of the given member.
 func (r *Ring) printNeighbors(memberID string) {
 	succ, errSucc := r.GetSuccessor(memberID)
