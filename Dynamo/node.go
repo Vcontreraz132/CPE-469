@@ -8,7 +8,6 @@ import (
 	"net/rpc"
 	"sync"
 	"time"
-
 	//"encoding/json"
 	"errors"
 	"fmt"
@@ -18,13 +17,14 @@ import (
 type Node struct {
 	ID         string
 	Address    string
-	Peers      map[string]struct{} // Known peer addresses.
-	Membership map[string]Member   // Local membership table.
+	Peers      map[string]struct{}   // Known peer addresses.
+	Membership map[string]Member     // Local membership table.
 	// Store *DataStore
-	DataStore    map[string]ValueRecord
-	mutex        sync.Mutex
+	DataStore map[string]ValueRecord
+	mutex      sync.Mutex
+	Ring *Ring
 	OperationLog []string
-	LogMutex     sync.Mutex
+	LogMutex sync.Mutex
 }
 
 // NewNode creates a new Node instance.
@@ -43,6 +43,7 @@ func NewNode(id, address string) *Node {
 		Address:  address,
 		LastSeen: time.Now(),
 	}
+	node.Ring = BuildRingFromMembership(node.Membership) // add node to ring upon startup
 	return node
 }
 
@@ -204,13 +205,25 @@ func (n *Node) getMembershipSnapshot() map[string]Member {
 func (n *Node) mergeMembership(incoming map[string]Member) {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
+	changed := false
 	for id, member := range incoming {
 		existing, exists := n.Membership[id]
 		if !exists || member.LastSeen.After(existing.LastSeen) {
 			n.Membership[id] = member
 			n.Peers[member.Address] = struct{}{}
-			log.Printf("Updated membership: %s at %s", id, member.Address)
+			
+			// if !exists {
+			// n.Ring.build(member)
+			// fmt.Println("Member added")
+			changed = true
+			// }
+
+			log.Printf("New membership: %s at %s", id, member.Address)
 		}
+	}
+	if changed {
+		n.Ring = BuildRingFromMembership(n.Membership)
+		log.Printf("Ring updated: %s", n.Ring.String())
 	}
 }
 
@@ -232,7 +245,7 @@ func (n *Node) updateHeartbeat() {
 type VectorClock map[string]int
 
 // create deep copy of vector clock so that you can modify vector clock while keeping a backup
-func (vc VectorClock) Copy() VectorClock {
+func (vc VectorClock) Copy()VectorClock {
 	newVc := make(VectorClock)
 	for k, v := range vc {
 		newVc[k] = v
@@ -241,7 +254,7 @@ func (vc VectorClock) Copy() VectorClock {
 }
 
 // return sum of all counters to the latest version of vector clock
-func sumClock(vc VectorClock) int {
+func sumClock(vc VectorClock) int{
 	sum := 0
 	for _, v := range vc {
 		sum += v
@@ -260,44 +273,6 @@ type ValueRecord struct {
 // DoPut implements a consensus-based write for a given key and value.
 // It performs a local update and then contacts a quorum of peers.
 func (n *Node) DoPut(key, value string) error {
-	// Build the ring from the current membership.
-	ring := BuildRingFromMembership(n.Membership)
-	responsible, err := ring.GetResponsibleNode(key)
-	if err != nil {
-		return err
-	}
-
-	// If this node is not responsible, forward the put request.
-	if responsible.Member.ID != n.ID {
-		// Log the forwarding decision.
-		log.Printf("Node %s is not responsible for key %s, forwarding it to node %s", n.ID, key, responsible.Member.ID)
-
-		client, err := rpc.Dial("tcp", responsible.Member.Address)
-		if err != nil {
-			return fmt.Errorf("Error dialing responsible node %s: %v", responsible.Member.ID, err)
-		}
-		defer client.Close()
-
-		// Prepare the put arguments.
-		args := &PutArgs{
-			Key:   key,
-			Value: value,
-			// The responsible node will compute the correct vector clock.
-			Clock: nil,
-		}
-
-		// Call the dedicated RPC method for forwarded puts.
-		var reply PutReply
-		err = client.Call("DataService.ForwardPutRPC", args, &reply)
-		if err != nil {
-			return fmt.Errorf("Error forwarding put request to node %s: %v", responsible.Member.ID, err)
-		}
-		if reply.Success {
-			return nil
-		}
-		return fmt.Errorf("Responsible node %s failed to process the put request", responsible.Member.ID)
-	}
-
 	// Local update: update the vector clock.
 	n.mutex.Lock()
 	var newClock VectorClock
@@ -357,32 +332,6 @@ func (n *Node) DoPut(key, value string) error {
 // DoGet implements a quorum-based read for a given key.
 // It queries a quorum of nodes and returns the value with the highest clock.
 func (n *Node) DoGet(key string) (ValueRecord, error) {
-	// Build the ring from the current membership.
-	ring := BuildRingFromMembership(n.Membership)
-	responsible, err := ring.GetResponsibleNode(key)
-	if err != nil {
-		return ValueRecord{}, err
-	}
-
-	// If this node is not responsible, forward the get request.
-	if responsible.Member.ID != n.ID {
-		log.Printf("Node %s is not responsible for key %s, forwarding get request to Node %s", n.ID, key, responsible.Member.ID)
-
-		client, err := rpc.Dial("tcp", responsible.Member.Address)
-		if err != nil {
-			return ValueRecord{}, fmt.Errorf("error dialing responsible node %s: %v", responsible.Member.ID, err)
-		}
-		defer client.Close()
-
-		args := &GetArgs{Key: key}
-		var reply GetReply
-		err = client.Call("DataService.ForwardGetRPC", args, &reply)
-		if err != nil {
-			return ValueRecord{}, fmt.Errorf("error forwarding get request to node %s: %v", responsible.Member.ID, err)
-		}
-		return reply.Record, nil
-	}
-
 	var responses []ValueRecord
 	// Get local value (if exists).
 	n.mutex.Lock()
@@ -443,6 +392,8 @@ func (n *Node) selectQuorumPeers() []string {
 	return peers
 }
 
+
+
 // operation log with timestamp
 func (n *Node) LogOperation(opType, details string) {
 	entry := fmt.Sprintf("%s - %s: %s", time.Now().Format(time.RFC3339), opType, details)
@@ -453,23 +404,26 @@ func (n *Node) LogOperation(opType, details string) {
 	log.Println(entry)
 }
 
-const heartbeatTimeout = 10 * time.Second // adjust as needed
+
+const heartbeatTimeout = 20 * time.Second // adjust as needed
 
 // cleanupStaleMembers periodically removes members whose heartbeat is stale.
 func (n *Node) cleanupStaleMembers() {
-	for {
-		time.Sleep(5 * time.Second) // check every 5 seconds
-		n.mutex.Lock()
-		for id, member := range n.Membership {
-			if id == n.ID {
-				continue // skip self
-			}
-			if time.Since(member.LastSeen) > heartbeatTimeout {
-				log.Printf("Removing stale member %s (last seen %v ago)", id, time.Since(member.LastSeen))
-				delete(n.Membership, id)
-				delete(n.Peers, member.Address)
-			}
-		}
-		n.mutex.Unlock()
-	}
+    for {
+        time.Sleep(5 * time.Second) // check every 5 seconds
+        n.mutex.Lock()
+        for id, member := range n.Membership {
+            if id == n.ID {
+                continue // skip self
+            }
+            if time.Since(member.LastSeen) > heartbeatTimeout {
+                log.Printf("Removing stale member %s (last seen %v ago)", id, time.Since(member.LastSeen))
+                delete(n.Membership, id)
+                delete(n.Peers, member.Address)
+				n.Ring.RemoveMember(id)
+				n.Ring.printNeighbors(id)
+            }
+        }
+        n.mutex.Unlock()
+    }
 }
