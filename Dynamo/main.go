@@ -5,15 +5,35 @@ import (
 	"flag"
 	"fmt"
 	"log"
+
 	//"net/rpc"
 	"os"
 	"time"
 )
 
 const (
-	basePort               = 8000
-	membershipServerAddr   = "localhost:9000"
+	basePort             = 8000
+	membershipServerAddr = "localhost:9000"
 )
+
+// updateKeyTest updates a key to a new value and retrieves it
+func updateKeyTest(n *Node, key, newValue string) {
+	log.Printf("Updating key %s to new value: %s", key, newValue)
+	err := n.DoPut(key, newValue)
+	if err != nil {
+		log.Printf("Error updating key %s: %v", key, err)
+		return
+	}
+	// Wait briefly to allow the update (and any replication) to propagate.
+	time.Sleep(2 * time.Second)
+
+	record, err := n.DoGet(key)
+	if err != nil {
+		log.Printf("Error retrieving key %s: %v", key, err)
+	} else {
+		log.Printf("After update, key %s now has value: %s (clock: %v)", key, record.Value, record.Clock)
+	}
+}
 
 func main() {
 	// Provide only a unique node ID.
@@ -22,7 +42,7 @@ func main() {
 	testRing := flag.Bool("testRing", false, "Test consistent hash ring functionality")
 
 	flag.Parse()
-	
+
 	if *testRing {
 		// In test mode, we assume that this node's membership table is already populated.
 		// For example, register with the central server and fetch membership.
@@ -75,7 +95,7 @@ func main() {
 	nodeID := fmt.Sprintf("node%d", *id)
 
 	logFilename := fmt.Sprintf("%s.log", nodeID)
-	f, err := os.OpenFile(logFilename, os.O_CREATE | os.O_APPEND | os.O_WRONLY, 0666)
+	f, err := os.OpenFile(logFilename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
 	if err != nil {
 		fmt.Printf("Error opening log file %s: %v\n", logFilename, err)
 		os.Exit(1)
@@ -111,26 +131,29 @@ func main() {
 	// Start the periodic gossip loop.
 	node.StartGossip()
 
-		// For demonstration, you can invoke consensus operations from the coordinator.
+	// For demonstration, you can invoke consensus operations from the coordinator.
 	// For example, if this node is node1, after a delay, do a Put and Get.
 	// (In practice these would be triggered by client requests.)
 	// Uncomment the following block to try a demo operation.
-	
-		time.Sleep(5 * time.Second)
-		err = node.DoPut("exampleKey", "HelloDynamo")
-		if err != nil {
-			log.Printf("DoPut error: %v", err)
-		} else {
-			log.Println("DoPut succeeded for key 'exampleKey'")
-		}
-		time.Sleep(2 * time.Second)
-		record, err := node.DoGet("exampleKey")
-		if err != nil {
-			log.Printf("DoGet error: %v", err)
-		} else {
-			log.Printf("DoGet returned: %s with clock %v", record.Value, record.Clock)
-		}
-	
+
+	time.Sleep(5 * time.Second)
+	err = node.DoPut("exampleKey", "HelloDynamo")
+	if err != nil {
+		log.Printf("DoPut error: %v", err)
+	} else {
+		log.Println("DoPut succeeded for key 'exampleKey'")
+	}
+	time.Sleep(2 * time.Second)
+	record, err := node.DoGet("exampleKey")
+	if err != nil {
+		log.Printf("DoGet error: %v", err)
+	} else {
+		log.Printf("DoGet returned: %s with clock %v", record.Value, record.Clock)
+	}
+
+	// Call updateKeyTest to add or update a key.
+	time.Sleep(5 * time.Second)
+	updateKeyTest(node, "exampleKey", "UpdatedValue")
 
 	// Block forever.
 	select {}
